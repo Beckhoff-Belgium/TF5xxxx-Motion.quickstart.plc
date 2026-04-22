@@ -53,14 +53,32 @@ plc/
 `MAIN` runs a seven-state shuttle loop. All operator commands and motion parameters are
 declared directly in `MAIN` so they are visible in the Watch Window or any HMI.
 
-```
-eIDLE → ePOWERING_ON → eMOVE_TO_A → eWAIT_MOVE_A
-                         ↑                          ↓
-                     eWAIT_MOVE_B ← eMOVE_TO_B ←──┘
+```mermaid
+stateDiagram-v2
+    [*] --> eIDLE
 
-Any state → eERROR  (on fbAxis.bError)
-eERROR    → eIDLE   (on bReset + reset complete)
-Any state → eIDLE   (on bStop)
+    eIDLE          --> ePOWERING_ON  : bStart ↑
+    ePOWERING_ON   --> eMOVE_TO_A   : bReady
+
+    eMOVE_TO_A     --> eWAIT_MOVE_A : move issued
+    eWAIT_MOVE_A   --> eMOVE_TO_B   : bMoveDone
+
+    eMOVE_TO_B     --> eWAIT_MOVE_B : move issued
+    eWAIT_MOVE_B   --> eMOVE_TO_A   : bMoveDone
+
+    ePOWERING_ON   --> eERROR : bError
+    eMOVE_TO_A     --> eERROR : bError
+    eWAIT_MOVE_A   --> eERROR : bError
+    eMOVE_TO_B     --> eERROR : bError
+    eWAIT_MOVE_B   --> eERROR : bError
+
+    ePOWERING_ON   --> eIDLE  : bStop
+    eMOVE_TO_A     --> eIDLE  : bStop
+    eWAIT_MOVE_A   --> eIDLE  : bStop
+    eMOVE_TO_B     --> eIDLE  : bStop
+    eWAIT_MOVE_B   --> eIDLE  : bStop
+
+    eERROR         --> eIDLE  : bResetDone
 ```
 
 | State | Value | Description |
