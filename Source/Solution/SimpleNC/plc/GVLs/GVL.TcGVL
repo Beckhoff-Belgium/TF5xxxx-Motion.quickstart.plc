@@ -1,0 +1,9 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
+  <GVL Name="GVL" Id="{b9d2c063-b230-42ac-921a-7a9fce678fa7}">
+    <Declaration><![CDATA[{attribute 'qualified_only'}
+VAR_GLOBAL
+    ncAxis          : AXIS_REF;         // Link to NC axis in the I/O tree
+END_VAR]]></Declaration>
+  </GVL>
+</TcPlcObject>

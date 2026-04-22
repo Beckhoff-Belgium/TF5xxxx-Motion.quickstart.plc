@@ -1,0 +1,138 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
+  <POU Name="MAIN" Id="{e94f8184-5b25-4dad-a5be-09d9005998b9}" SpecialFunc="None">
+    <Declaration><![CDATA[PROGRAM MAIN
+VAR
+    (* ── Axis objects ─────────────────────────────────────────────────────── *)
+    fbAxis          : FB_AxisControl;
+
+    (* ── Operator commands (write from HMI / watch window) ───────────────── *)
+    bStart          : BOOL;             // Rising edge — start shuttle sequence
+    bStop           : BOOL;             // TRUE — stop sequence and power down
+    bReset          : BOOL;             // Rising edge — reset axis error
+
+    (* ── Shuttle parameters ───────────────────────────────────────────────── *)
+    fPosA           : LREAL := 0.0;     // Position A [axis unit]
+    fPosB           : LREAL := 100.0;   // Position B [axis unit]
+    fVelocity       : LREAL := 50.0;    // Move velocity     [axis unit / s]
+    fAcceleration   : LREAL := 500.0;   // Acceleration      [axis unit / s²]
+    fDeceleration   : LREAL := 500.0;   // Deceleration      [axis unit / s²]
+    fJerk           : LREAL := 0.0;     // Jerk limit (0 = disabled)
+
+    (* ── State machine ────────────────────────────────────────────────────── *)
+    eState          : E_AxisState := E_AxisState.eIDLE;
+
+    (* ── Internal FB drive signals ───────────────────────────────────────── *)
+    bEnableAxis     : BOOL;             // Drives fbAxis.bEnable every cycle
+    bMoveCmd        : BOOL;             // Single-cycle rising edge for fbAxis.bMoveAbsolute
+    fMoveTarget     : LREAL;            // Active target forwarded to fbAxis
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[// ── State machine ─────────────────────────────────────────────────────────────
+CASE eState OF
+
+    // ── eIDLE ──────────────────────────────────────────────────────────────
+    // Axis is unpowered. Wait for the operator to press Start.
+    E_AxisState.eIDLE:
+        bEnableAxis := FALSE;
+        IF bStart THEN
+            bStart  := FALSE;   // consume the edge
+            eState  := E_AxisState.ePOWERING_ON;
+        END_IF
+
+    // ── ePOWERING_ON ───────────────────────────────────────────────────────
+    // Power is applied. Wait until the axis reports bReady (servo on, no error).
+    E_AxisState.ePOWERING_ON:
+        bEnableAxis := TRUE;
+        IF fbAxis.bReady THEN
+            eState := E_AxisState.eMOVE_TO_A;
+        END_IF
+
+    // ── eMOVE_TO_A ─────────────────────────────────────────────────────────
+    // Assert bMoveCmd for exactly one PLC cycle to generate the rising edge
+    // that triggers MC_MoveAbsolute toward position A, then advance immediately.
+    E_AxisState.eMOVE_TO_A:
+        fMoveTarget := fPosA;
+        bMoveCmd    := TRUE;
+        eState      := E_AxisState.eWAIT_MOVE_A;
+
+    // ── eWAIT_MOVE_A ───────────────────────────────────────────────────────
+    // bMoveCmd is cleared so MC_MoveAbsolute executes without re-triggering.
+    // Proceed to B once the move is complete.
+    E_AxisState.eWAIT_MOVE_A:
+        bMoveCmd := FALSE;
+        IF fbAxis.bMoveDone THEN
+            eState := E_AxisState.eMOVE_TO_B;
+        END_IF
+
+    // ── eMOVE_TO_B ─────────────────────────────────────────────────────────
+    E_AxisState.eMOVE_TO_B:
+        fMoveTarget := fPosB;
+        bMoveCmd    := TRUE;
+        eState      := E_AxisState.eWAIT_MOVE_B;
+
+    // ── eWAIT_MOVE_B ───────────────────────────────────────────────────────
+    // Once position B is reached, loop back and head to A again.
+    E_AxisState.eWAIT_MOVE_B:
+        bMoveCmd := FALSE;
+        IF fbAxis.bMoveDone THEN
+            eState := E_AxisState.eMOVE_TO_A;
+        END_IF
+
+    // ── eERROR ─────────────────────────────────────────────────────────────
+    // Power is removed. The operator must pulse bReset to clear the axis error.
+    // FB_AxisControl forwards bReset to MC_Reset every cycle; once MC_Reset
+    // reports Done the axis error is cleared and we return to eIDLE.
+    E_AxisState.eERROR:
+        bEnableAxis := FALSE;
+        bMoveCmd    := FALSE;
+        IF fbAxis.bResetDone THEN
+            eState := E_AxisState.eIDLE;
+        END_IF
+
+END_CASE
+
+// ── Global stop ────────────────────────────────────────────────────────────────
+// Accepted from any active state; powers the axis down and returns to eIDLE.
+IF bStop
+    AND eState <> E_AxisState.eIDLE
+    AND eState <> E_AxisState.eERROR
+THEN
+    bStop       := FALSE;
+    bMoveCmd    := FALSE;
+    bEnableAxis := FALSE;
+    eState      := E_AxisState.eIDLE;
+END_IF
+
+// ── Error guard ────────────────────────────────────────────────────────────────
+// Catch axis errors that surface during any active state.
+IF fbAxis.bError
+    AND eState <> E_AxisState.eERROR
+    AND eState <> E_AxisState.eIDLE
+THEN
+    bMoveCmd    := FALSE;
+    bEnableAxis := FALSE;
+    eState      := E_AxisState.eERROR;
+END_IF
+
+// ── Call FB_AxisControl ────────────────────────────────────────────────────────
+// Must be the last statement so that bMoveCmd and bEnableAxis reflect the
+// decisions taken in this cycle before being forwarded to the MC FBs.
+fbAxis(
+    stAxis          := GVL.ncAxis,
+    bEnable         := bEnableAxis,
+    bEnablePositive := bEnableAxis,
+    bEnableNegative := bEnableAxis,
+    bReset          := bReset,
+    bMoveAbsolute   := bMoveCmd,
+    fTargetPosition := fMoveTarget,
+    fVelocity       := fVelocity,
+    fAcceleration   := fAcceleration,
+    fDeceleration   := fDeceleration,
+    fJerk           := fJerk
+);
+]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>

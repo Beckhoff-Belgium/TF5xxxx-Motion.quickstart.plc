@@ -1,0 +1,140 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
+  <POU Name="FB_AxisControl" Id="{a1b2c3d4-e5f6-7890-abcd-ef1234567890}" SpecialFunc="None">
+    <Declaration><![CDATA[{attribute 'reflection'}
+(* ============================================================
+   FB_AxisControl
+   Purpose : Wraps the core Tc2_MC2 motion function blocks for
+             a single NC axis — power, reset and absolute move.
+   Requires: Tc2_MC2 library reference in the PLC project.
+   Usage   : Call this FB every PLC cycle. Drive inputs with
+             rising-edge signals from your HMI / state machine.
+   ============================================================ *)
+FUNCTION_BLOCK FB_AxisControl
+VAR_IN_OUT
+    (* NC axis reference — link to the axis object in the I/O tree. *)
+    stAxis              : AXIS_REF;
+END_VAR
+VAR_INPUT
+    (* --- Power control --- *)
+    bEnable             : BOOL;     // TRUE = servo on (MC_Power Enable)
+    bEnablePositive     : BOOL;     // TRUE = allow motion in positive direction
+    bEnableNegative     : BOOL;     // TRUE = allow motion in negative direction
+
+    (* --- Reset --- *)
+    bReset              : BOOL;     // Rising edge clears axis error and re-enables
+
+    (* --- Absolute move --- *)
+    bMoveAbsolute       : BOOL;     // Rising edge starts absolute positioning move
+    fTargetPosition     : LREAL;    // Target position [axis unit]
+    fVelocity           : LREAL;    // Move velocity    [axis unit / s]
+    fAcceleration       : LREAL;    // Acceleration     [axis unit / s²]
+    fDeceleration       : LREAL;    // Deceleration     [axis unit / s²]
+    fJerk               : LREAL;    // Jerk limit       [axis unit / s³], 0 = disabled
+END_VAR
+VAR_OUTPUT
+    (* --- Axis status feedback --- *)
+    bPowered            : BOOL;     // Axis servo is on (MC_Power.Status)
+    bReady              : BOOL;     // Powered and no error — ready for commands
+    bBusy               : BOOL;     // Any motion command is currently active
+
+    (* --- MC_Reset feedback --- *)
+    bResetDone          : BOOL;     // Reset completed successfully
+    bResetBusy          : BOOL;     // Reset in progress
+    bResetError         : BOOL;     // Reset FB error
+    nResetErrorId       : UDINT;    // Reset ADS error ID
+
+    (* --- MC_MoveAbsolute feedback --- *)
+    bMoveDone           : BOOL;     // Absolute move reached target position
+    bMoveBusy           : BOOL;     // Absolute move in progress
+    bMoveActive         : BOOL;     // Absolute move command is active on the axis
+    bMoveError          : BOOL;     // Absolute move FB error
+    nMoveErrorId        : UDINT;    // Absolute move ADS error ID
+
+    (* --- Aggregated error --- *)
+    bError              : BOOL;     // Any of the motion FBs has an active error
+    nErrorId            : UDINT;    // First non-zero error ID among all FBs
+
+    (* --- Live axis data --- *)
+    fActPosition        : LREAL;    // Actual position [axis unit]
+    fActVelocity        : LREAL;    // Actual velocity [axis unit / s]
+END_VAR
+VAR
+    fbMcPower           : MC_Power;
+    fbMcReset           : MC_Reset;
+    fbMcMoveAbsolute    : MC_MoveAbsolute;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[// Get axis status
+stAxis.ReadStatus();
+
+// ── MC_Power ──────────────────────────────────────────────────────────────────
+// Continuously driven every cycle; axis stays powered as long as bEnable = TRUE.
+fbMcPower(
+    Axis            := stAxis,
+    Enable          := bEnable,
+    Enable_Positive := bEnablePositive,
+    Enable_Negative := bEnableNegative,
+    Override        := 100.0,           // velocity override 100 %
+    BufferMode      := MC_Aborting
+);
+bPowered := fbMcPower.Status;
+
+// ── MC_Reset ──────────────────────────────────────────────────────────────────
+// Triggered by a rising edge on bReset; clears axis errors so MC_Power can
+// re-establish servo state.
+fbMcReset(
+    Axis    := stAxis,
+    Execute := bReset
+);
+bResetDone    := fbMcReset.Done;
+bResetBusy    := fbMcReset.Busy;
+bResetError   := fbMcReset.Error;
+nResetErrorId := fbMcReset.ErrorID;
+
+// ── MC_MoveAbsolute ───────────────────────────────────────────────────────────
+// Triggered by a rising edge on bMoveAbsolute. The axis must be powered and
+// error-free before issuing the command.
+fbMcMoveAbsolute(
+    Axis         := GVL.ncAxis,
+    Execute      := bMoveAbsolute,
+    Position     := fTargetPosition,
+    Velocity     := fVelocity,
+    Acceleration := fAcceleration,
+    Deceleration := fDeceleration,
+    Jerk         := fJerk,
+    BufferMode   := MC_Aborting
+);
+bMoveDone    := fbMcMoveAbsolute.Done;
+bMoveBusy    := fbMcMoveAbsolute.Busy;
+bMoveActive  := fbMcMoveAbsolute.Active;
+bMoveError   := fbMcMoveAbsolute.Error;
+nMoveErrorId := fbMcMoveAbsolute.ErrorID;
+
+// ── Aggregated status ─────────────────────────────────────────────────────────
+bBusy  := bResetBusy OR bMoveBusy;
+bError := fbMcPower.Error OR bResetError OR bMoveError;
+
+// Expose the first non-zero error ID for quick diagnostics.
+IF fbMcPower.Error THEN
+    nErrorId := fbMcPower.ErrorID;
+ELSIF bResetError THEN
+    nErrorId := nResetErrorId;
+ELSIF bMoveError THEN
+    nErrorId := nMoveErrorId;
+ELSE
+    nErrorId := 0;
+END_IF
+
+// Axis is truly ready only when powered and no error is present.
+bReady := bPowered AND NOT bError;
+
+// ── Live axis position and velocity ───────────────────────────────────────────
+// Read directly from the AXIS_REF NcToPlc structure (updated by the NC task).
+fActPosition := stAxis.NcToPlc.ActPos;
+fActVelocity := stAxis.NcToPlc.ActVelo;
+]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>
