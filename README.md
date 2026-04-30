@@ -1,156 +1,143 @@
-# TwinCAT MC2 Axis Shuttle — Quickstart Example
-
-> **AI-Generated Code — Not Production Ready**
->
-> This project was generated with the assistance of an AI tool (Claude, by Anthropic).
-> It is intended purely as a **learning and quickstart reference**. Before using any part of
-> this code in a real machine or installation, a qualified automation engineer must review and
-> validate it against the applicable safety standards (e.g. IEC 62061, ISO 13849), site-specific
-> requirements, drive and encoder configuration, and commissioning procedures. No warranty of
-> any kind is expressed or implied.
+# 📦 Sample — QuickstartMotion
 
 ---
 
-This project is a minimal, self-contained TwinCAT 3 example that demonstrates how to perform
-**absolute-position motion control** using the Beckhoff **Tc2_MC2** library. It implements a
-continuous shuttle (back-and-forth) motion between two configurable positions, driven by a clean
-state machine in `MAIN` and an encapsulated reusable function block `FB_AxisControl`.
+## 🧠 Remarks and limitations
 
-The project targets any TwinCAT-compatible hardware (x86, x64, ARM) and uses a generic analog
-drive with incremental encoder — no vendor-specific drive configuration is required.
-
----
-
-## What the Sample Does
-
-| Feature | Detail |
-|---|---|
-| Motion type | Absolute positioning (`MC_MoveAbsolute`) |
-| Pattern | Continuous shuttle between position A and position B |
-| Axis power | Managed by `MC_Power` with enable/disable handshake |
-| Error recovery | `MC_Reset` triggered by operator `bReset` command |
-| Operator interface | Three BOOL commands: Start, Stop, Reset |
-| PLC cycle time | 10 ms |
-| NC cycle time | 20 ms (SAF task) |
+- This is an **AI-generated sample/template project** intended purely as a learning and quickstart reference. Before using any part of this code in a real machine or installation, a qualified automation engineer must review and validate it against the applicable safety standards (e.g. IEC 62061, ISO 13849), site-specific requirements, drive and encoder configuration, and commissioning procedures. No warranty of any kind is expressed or implied.
+- Minimum TwinCAT version: **3.1.4026**
+- Requires the **Tc2_MC2** library (ships with TwinCAT, no manual install needed)
+- The NC axis object (`GVL.ncAxis`) must be linked to an actual NC axis in the I/O tree before activating the project — this is the only hardware-specific step.
+- The project uses a generic analog drive with incremental encoder — no vendor-specific drive configuration is required.
 
 ---
 
-## Project Structure
+## 🔧 Functionality Overview
 
+### `FB_AxisControl`
+
+Wraps the three core Tc2_MC2 motion function blocks (`MC_Power`, `MC_Reset`, `MC_MoveAbsolute`) for a single NC axis behind a simple, cycle-called interface.
+
+- Internally calls all three MC function blocks every PLC cycle; operator commands are triggered via rising-edge inputs.
+- Aggregates error status from all three FBs into a single `bError` / `nErrorId` output.
+- Exposes live axis position and velocity from the NcToPlc structure.
+
+**Inputs**
+
+| I/O | Name | Type | Default | Description |
+|-----|------|------|---------|-------------|
+| VAR_IN_OUT | stAxis | AXIS_REF | — | NC axis reference (link to I/O tree) |
+| VAR_INPUT | bEnable | BOOL | — | TRUE = servo on |
+| VAR_INPUT | bEnablePositive | BOOL | — | Allow motion in positive direction |
+| VAR_INPUT | bEnableNegative | BOOL | — | Allow motion in negative direction |
+| VAR_INPUT | bReset | BOOL | — | Rising edge clears axis error |
+| VAR_INPUT | bMoveAbsolute | BOOL | — | Rising edge starts absolute move |
+| VAR_INPUT | fTargetPosition | LREAL | — | Target position [axis unit] |
+| VAR_INPUT | fVelocity | LREAL | — | Move velocity [axis unit/s] |
+| VAR_INPUT | fAcceleration | LREAL | — | Acceleration [axis unit/s²] |
+| VAR_INPUT | fDeceleration | LREAL | — | Deceleration [axis unit/s²] |
+| VAR_INPUT | fJerk | LREAL | — | Jerk limit [axis unit/s³], 0 = disabled |
+
+**Outputs**
+
+| I/O | Name | Type | Default | Description |
+|-----|------|------|---------|-------------|
+| VAR_OUTPUT | bPowered | BOOL | — | Axis servo is on |
+| VAR_OUTPUT | bReady | BOOL | — | Powered and no error |
+| VAR_OUTPUT | bBusy | BOOL | — | Any motion command is active |
+| VAR_OUTPUT | bError | BOOL | — | Any FB has an active error |
+| VAR_OUTPUT | nErrorId | UDINT | — | First non-zero error ID |
+| VAR_OUTPUT | fActPosition | LREAL | — | Actual position [axis unit] |
+| VAR_OUTPUT | fActVelocity | LREAL | — | Actual velocity [axis unit/s] |
+
+### `MAIN`
+
+Program that implements a continuous shuttle (back-and-forth) between two configurable positions using `FB_AxisControl`.
+
+- Uses a state machine driven by `E_AxisState` (7 states: IDLE → POWERING_ON → MOVE_TO_A ↔ MOVE_TO_B, with ERROR handling).
+- Operator commands: `bStart` (rising edge), `bStop` (immediate power-down), `bReset` (clear error).
+- Shuttle parameters (`fPosA`, `fPosB`, `fVelocity`, `fAcceleration`, `fDeceleration`, `fJerk`) can be changed online.
+- A global stop and error guard run after the state machine to catch errors and stop requests from any active state.
+
+### `E_AxisState`
+
+Qualified-only enumeration naming each state machine step. Values are spaced by 10 for readability (0, 10, 20, 30, 40, 50, 99).
+
+### `GVL`
+
+Single global variable `ncAxis : AXIS_REF` — must be linked to the NC axis in the TwinCAT I/O tree.
+
+| Task | Cycle | Priority | Runs |
+|------|-------|----------|------|
+| PlcTask | 10 ms | 20 | MAIN |
+
+---
+
+## 🧪 Example
+
+<!-- Minimal shuttle instantiation — already wired in MAIN -->
+```iecst
+PROGRAM MAIN
+VAR
+    fbAxis          : FB_AxisControl;
+    bStart          : BOOL;
+    bStop           : BOOL;
+    bReset          : BOOL;
+    fPosA           : LREAL := 0.0;
+    fPosB           : LREAL := 100.0;
+    fVelocity       : LREAL := 50.0;
+    fAcceleration   : LREAL := 500.0;
+    fDeceleration   : LREAL := 500.0;
+    fJerk           : LREAL := 0.0;
+    eState          : E_AxisState := E_AxisState.eIDLE;
+    bEnableAxis     : BOOL;
+    bMoveCmd        : BOOL;
+    fMoveTarget     : LREAL;
+END_VAR
 ```
-plc/
-├── POUs/
-│   ├── MAIN.TcPOU          — Shuttle state machine (entry point)
-│   └── FB_AxisControl.TcPOU — Reusable axis wrapper (MC_Power + MC_Reset + MC_MoveAbsolute)
-├── DUTs/
-│   └── E_AxisState.TcDUT   — Enumeration of state machine states
-└── GVLs/
-    └── GVL.TcGVL           — Global AXIS_REF (linked to the NC axis in the I/O tree)
+
+```iecst
+// Call FB_AxisControl at the end of every PLC cycle
+fbAxis(
+    stAxis          := GVL.ncAxis,
+    bEnable         := bEnableAxis,
+    bEnablePositive := bEnableAxis,
+    bEnableNegative := bEnableAxis,
+    bReset          := bReset,
+    bMoveAbsolute   := bMoveCmd,
+    fTargetPosition := fMoveTarget,
+    fVelocity       := fVelocity,
+    fAcceleration   := fAcceleration,
+    fDeceleration   := fDeceleration,
+    fJerk           := fJerk
+);
 ```
 
-### MAIN — State Machine
-
-`MAIN` runs a seven-state shuttle loop. All operator commands and motion parameters are
-declared directly in `MAIN` so they are visible in the Watch Window or any HMI.
-
-```mermaid
-stateDiagram-v2
-    [*] --> eIDLE
-
-    eIDLE          --> ePOWERING_ON  : bStart ↑
-    ePOWERING_ON   --> eMOVE_TO_A   : bReady
-
-    eMOVE_TO_A     --> eWAIT_MOVE_A : move issued
-    eWAIT_MOVE_A   --> eMOVE_TO_B   : bMoveDone
-
-    eMOVE_TO_B     --> eWAIT_MOVE_B : move issued
-    eWAIT_MOVE_B   --> eMOVE_TO_A   : bMoveDone
-
-    ePOWERING_ON   --> eERROR : bError
-    eMOVE_TO_A     --> eERROR : bError
-    eWAIT_MOVE_A   --> eERROR : bError
-    eMOVE_TO_B     --> eERROR : bError
-    eWAIT_MOVE_B   --> eERROR : bError
-
-    ePOWERING_ON   --> eIDLE  : bStop
-    eMOVE_TO_A     --> eIDLE  : bStop
-    eWAIT_MOVE_A   --> eIDLE  : bStop
-    eMOVE_TO_B     --> eIDLE  : bStop
-    eWAIT_MOVE_B   --> eIDLE  : bStop
-
-    eERROR         --> eIDLE  : bResetDone
-```
-
-| State | Value | Description |
-|---|---|---|
-| `eIDLE` | 0 | Axis unpowered; waiting for `bStart` rising edge |
-| `ePOWERING_ON` | 10 | Power enabled; waiting for `fbAxis.bReady` |
-| `eMOVE_TO_A` | 20 | Issues one-cycle move command to position A |
-| `eWAIT_MOVE_A` | 30 | Waits for `fbAxis.bMoveDone` |
-| `eMOVE_TO_B` | 40 | Issues one-cycle move command to position B |
-| `eWAIT_MOVE_B` | 50 | Waits for `fbAxis.bMoveDone`, then loops back |
-| `eERROR` | 99 | Powers down; waits for operator reset |
-
-### FB_AxisControl — Axis Wrapper
-
-`FB_AxisControl` hides the three Tc2_MC2 function blocks behind a simple, consistent interface.
-MAIN never calls `MC_Power`, `MC_Reset`, or `MC_MoveAbsolute` directly — it only uses
-`FB_AxisControl`.
-
-See **[FB_AxisControl.md](Documentation/FB_AxisControl.md)** for the full variable reference and behaviour
-description.
-
-### E_AxisState
-
-An `{attribute 'qualified_only'}` enumeration that names each state machine step. Using named
-constants instead of magic integers makes the Watch Window and error logs self-documenting.
-
-### GVL.ncAxis
-
-A global `AXIS_REF` variable that must be **linked to the NC axis** in the TwinCAT I/O tree
-before the project can be activated. The link is the only hardware-specific step in the project.
+To adapt this sample for your own device, link `GVL.ncAxis` to your NC axis in the I/O tree, adjust `fPosA`/`fPosB` to match your travel range, and set velocity/acceleration values appropriate for your drive and mechanics.
 
 ---
 
-## Operator Commands (Watch Window / HMI)
+## 🧠 Notes
 
-| Variable | Type | Action |
-|---|---|---|
-| `MAIN.bStart` | `BOOL` | Rising edge starts the shuttle sequence |
-| `MAIN.bStop` | `BOOL` | `TRUE` immediately powers down and returns to `eIDLE` |
-| `MAIN.bReset` | `BOOL` | Rising edge clears an axis error and returns to `eIDLE` |
-
-## Shuttle Parameters
-
-| Variable | Default | Unit | Description |
-|---|---|---|---|
-| `MAIN.fPosA` | `0.0` | axis unit | First shuttle position |
-| `MAIN.fPosB` | `100.0` | axis unit | Second shuttle position |
-| `MAIN.fVelocity` | `50.0` | unit/s | Move velocity |
-| `MAIN.fAcceleration` | `500.0` | unit/s² | Acceleration ramp |
-| `MAIN.fDeceleration` | `500.0` | unit/s² | Deceleration ramp |
-| `MAIN.fJerk` | `0.0` | unit/s³ | Jerk limit (0 = disabled) |
-
-All parameters can be changed online while the PLC is running. The new values take effect on
-the next move command.
+- `FB_AxisControl` must be called every PLC cycle — place the call as the last statement in `MAIN` so that all state-machine decisions are reflected before forwarding to the MC function blocks.
+- `bMoveCmd` is asserted for exactly one cycle to generate the rising edge that `MC_MoveAbsolute` requires; it is cleared in the following wait state.
+- The axis is considered ready (`bReady`) only when `MC_Power.Status` is TRUE and no error is active across any of the three MC FBs.
+- All shuttle parameters can be changed online while the PLC is running — new values take effect on the next move command.
 
 ---
 
-## Further Reading
+## 🔢 Additional information
 
-- [FB_AxisControl.md](Documentation/FB_AxisControl.md) — Detailed reference for the `FB_AxisControl`
-  function block: every input, output, and internal behaviour.
-- [quickstart.md](Documentation/quickstart.md) — Step-by-step instructions for adding `FB_AxisControl` to
-  your own project and linking it to an NC axis.
+**Required libraries**
 
----
+| Library | Vendor | Purpose |
+|---------|--------|---------|
+| Tc2_MC2 | Beckhoff Automation GmbH | Motion control function blocks (MC_Power, MC_Reset, MC_MoveAbsolute) |
+| Tc2_Standard | Beckhoff Automation GmbH | Standard PLC library |
+| Tc2_System | Beckhoff Automation GmbH | System library |
 
-## Requirements
+**Supported platforms**: x64
 
-| Component | Minimum version |
-|---|---|
-| TwinCAT 3 XAE | 3.1.4026 |
-| Tc2_MC2 library | 3.3.72.0 |
-| Tc2_Standard library | 3.4.7.0 |
-| Tc2_System library | 3.10.2.0 |
-| Hardware | Any TwinCAT-compatible controller (x86 / x64 / ARM) |
+**Minimum TwinCAT version**: 3.1.4026
+
+**License**: [LICENSE.md](LICENSE.md)
